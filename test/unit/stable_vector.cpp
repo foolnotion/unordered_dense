@@ -107,6 +107,46 @@ public:
     }
 };
 
+constexpr auto num_bits_closest(size_t max_val, size_t x) -> size_t {
+    auto f = size_t{0};
+    while (x << (f + 1) <= max_val) {
+        ++f;
+    }
+    return f;
+}
+
+template <typename T, size_t BlockSizeBytes = 4096, typename Allocator = std::allocator<T>>
+class my_deque {
+    static constexpr auto num_bits = num_bits_closest(BlockSizeBytes, sizeof(T));
+    static constexpr auto mask = (1U << num_bits) - 1U;
+    std::vector<T*> m_blocks{};
+    Allocator m_alloc{};
+
+public:
+    ~my_deque() {
+        for (auto* ptr : m_blocks) {
+            m_alloc.deallocate(ptr, 1U << num_bits);
+        }
+    }
+
+    [[nodiscard]] constexpr auto size() const -> size_t {
+        return m_blocks.size() << num_bits;
+    }
+
+    constexpr void grow() {
+        m_blocks.push_back(m_alloc.allocate(1U << num_bits));
+    }
+
+    [[nodiscard]] constexpr auto operator[](size_t i) const noexcept -> T const& {
+        return m_blocks[i >> num_bits][i & mask];
+    }
+
+    auto operator[](size_t i) noexcept -> T& {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+        return const_cast<T&>(std::as_const(*this)[i]);
+    }
+};
+
 TEST_CASE("stable_vector") {
     auto sv = stable_vector<size_t, std::numeric_limits<uint32_t>::max()>{};
 
@@ -123,7 +163,23 @@ TEST_CASE("stable_vector") {
     }
 }
 
-TEST_CASE("bench_stable_vector") {
+TEST_CASE("my_deque") {
+    auto sv = my_deque<size_t>{};
+
+    for (size_t i = 0; i < 20; ++i) {
+        sv.grow();
+    }
+    auto capa = sv.size();
+    for (size_t i = 0; i < capa; ++i) {
+        sv[i] = i;
+    }
+
+    for (size_t i = 0; i < capa; ++i) {
+        REQUIRE(sv[i] == i);
+    }
+}
+
+TEST_CASE("bench_stable_vector" * doctest::test_suite("bench") * doctest::skip()) {
     using namespace std::literals;
 
     ankerl::nanobench::Rng rng(123);
@@ -135,13 +191,21 @@ TEST_CASE("bench_stable_vector") {
     for (size_t i = 0; i < capa; ++i) {
         sv[i] = i;
     }
+    std::cout << sv.size() << " size sv" << std::endl;
 
-    std::cout << sv.size() << " size" << std::endl;
+    auto md = my_deque<size_t>{};
+    while (md.size() < sv.size()) {
+        md.grow();
+    }
+    std::cout << sv.size() << " size md" << std::endl;
+
     ankerl::nanobench::Bench().minEpochTime(100ms).batch(sv.size()).run("shuffle stable_vector", [&] {
         rng.shuffle(sv);
     });
 
-    //////
+    ankerl::nanobench::Bench().minEpochTime(100ms).batch(sv.size()).run("shuffle my_deque", [&] {
+        rng.shuffle(md);
+    });
 
     auto c = std::deque<size_t>();
     for (size_t i = 0; i < sv.size(); ++i) {

@@ -92,6 +92,8 @@ foreach arg : [
             '-pedantic-errors',
             '-Wold-style-cast',
             # '-Weffc++', doesn't work with fmt
+            
+            # '-march=native',
         ]
     if compiler.has_argument(arg)
         cpp_args += [arg]
