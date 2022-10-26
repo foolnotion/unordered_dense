@@ -115,17 +115,35 @@ constexpr auto num_bits_closest(size_t max_val, size_t x) -> size_t {
     return f;
 }
 
+// behaves like a slot_map, with stable references.
+// * O(1) construct(): Constructs an element, potentially allocating memory. Returns an index to the element. Might reuse
+// previously allocated memory.
+// * O(1) destroy(idx): destroys the element and puts it into an in-place freelist
+// * O(1) operator[](idx): Accesses element at that index.
+// * O(1) capacity(): total memory available
+
+// Things it does NOT do: anything that passes over all constructed elements, like:
+// * destruct all constructed elements. You need to do this yourself!
+// * Iterate all elements. Needs outer storage
 template <typename T, size_t BlockSizeBytes = 4096, typename Allocator = std::allocator<T>>
-class my_deque {
+class stable_index_map {
     static constexpr auto num_bits = num_bits_closest(BlockSizeBytes, sizeof(T));
     static constexpr auto mask = (1U << num_bits) - 1U;
     std::vector<T*> m_blocks{};
-    Allocator m_alloc{};
 
 public:
-    ~my_deque() {
+    // TODO(martinus) not yet implemented
+    stable_index_map(stable_index_map const&) = delete;
+    stable_index_map(stable_index_map&&) = delete;
+    auto operator=(stable_index_map const&) -> stable_index_map& = delete;
+    auto operator=(stable_index_map&&) -> stable_index_map& = delete;
+
+    stable_index_map() = default;
+
+    ~stable_index_map() {
+        auto alloc = Allocator{};
         for (auto* ptr : m_blocks) {
-            m_alloc.deallocate(ptr, 1U << num_bits);
+            alloc.deallocate(ptr, 1U << num_bits);
         }
     }
 
@@ -134,16 +152,16 @@ public:
     }
 
     constexpr void grow() {
-        m_blocks.push_back(m_alloc.allocate(1U << num_bits));
+        auto alloc = Allocator{};
+        m_blocks.push_back(alloc.allocate(1U << num_bits));
     }
 
     [[nodiscard]] constexpr auto operator[](size_t i) const noexcept -> T const& {
         return m_blocks[i >> num_bits][i & mask];
     }
 
-    auto operator[](size_t i) noexcept -> T& {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-        return const_cast<T&>(std::as_const(*this)[i]);
+    [[nodiscard]] constexpr auto operator[](size_t i) noexcept -> T& {
+        return m_blocks[i >> num_bits][i & mask];
     }
 };
 
@@ -163,8 +181,8 @@ TEST_CASE("stable_vector") {
     }
 }
 
-TEST_CASE("my_deque") {
-    auto sv = my_deque<size_t>{};
+TEST_CASE("stable_index_map") {
+    auto sv = stable_index_map<size_t>{};
 
     for (size_t i = 0; i < 20; ++i) {
         sv.grow();
@@ -193,7 +211,7 @@ TEST_CASE("bench_stable_vector" * doctest::test_suite("bench") * doctest::skip()
     }
     std::cout << sv.size() << " size sv" << std::endl;
 
-    auto md = my_deque<size_t>{};
+    auto md = stable_index_map<size_t>{};
     while (md.size() < sv.size()) {
         md.grow();
     }
@@ -203,7 +221,7 @@ TEST_CASE("bench_stable_vector" * doctest::test_suite("bench") * doctest::skip()
         rng.shuffle(sv);
     });
 
-    ankerl::nanobench::Bench().minEpochTime(100ms).batch(sv.size()).run("shuffle my_deque", [&] {
+    ankerl::nanobench::Bench().minEpochTime(100ms).batch(sv.size()).run("shuffle stable_index_map", [&] {
         rng.shuffle(md);
     });
 
